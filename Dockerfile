@@ -19,5 +19,5 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 COPY . .
 
-# Run gunicorn bound to the PORT environment variable
-CMD gunicorn app:app --bind 0.0.0.0:$PORT
+# Run gunicorn using configuration file to avoid Railway variable interpolation bugs
+CMD ["gunicorn", "-c", "gunicorn_conf.py", "app:app"]
