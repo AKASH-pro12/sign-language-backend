@@ -12,10 +12,8 @@ from routes.analytics import analytics_bp
 app = Flask(__name__)
 CORS(app)
 
-# Database Config
+# Database Config (temporary local - will change later)
 client = MongoClient('mongodb://localhost:27017/')
-# We attach the db instance to the app configuration so blueprints can access it if needed
-# Alternatively, we can use the db instance from database.models directly
 app.config['MONGO_CLIENT'] = client
 
 # Register Blueprints
@@ -27,5 +25,7 @@ app.register_blueprint(analytics_bp, url_prefix='/analytics')
 def index():
     return jsonify({"message": "Sign Language Detection API Running"})
 
+# ✅ IMPORTANT FIX FOR RENDER
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
