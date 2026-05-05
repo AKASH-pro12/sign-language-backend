@@ -2,63 +2,83 @@ import cv2
 import numpy as np
 import joblib
 import os
-from cvzone.HandTrackingModule import HandDetector
+import urllib.request
+import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 from tensorflow.keras.models import load_model
 
 class SignDetector:
     def __init__(self):
+        self.model = None
+        self.scaler = None
+        self.class_names = None
+        self.detector = None
+
+    def load_resources(self):
+        if self.model is not None:
+            return
+
         # Load Model & Files from local model directory
         base_path = os.path.dirname(__file__)
         model_path = os.path.join(base_path, "isl_117word_model.h5")
         scaler_path = os.path.join(base_path, "scaler.pkl")
         class_names_path = os.path.join(base_path, "class_names.pkl")
+        task_path = os.path.join(base_path, "hand_landmarker.task")
 
         print(f"Loading model from {model_path}...")
         self.model = load_model(model_path)
         self.scaler = joblib.load(scaler_path)
         self.class_names = joblib.load(class_names_path)
 
-        # Initialize CVZone HandDetector (uses Mediapipe internally)
-        self.detector = HandDetector(staticMode=True, maxHands=2, detectionCon=0.5)
-        print("Real Model initialized with CVZone (Inference Mode)")
+        # Download MediaPipe task model if not exists
+        if not os.path.exists(task_path):
+            print("Downloading MediaPipe Hand Landmarker task model...")
+            url = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+            urllib.request.urlretrieve(url, task_path)
+            print("Downloaded.")
+
+        # Initialize MediaPipe HandLandmarker
+        base_options = python.BaseOptions(model_asset_path=task_path)
+        options = vision.HandLandmarkerOptions(
+            base_options=base_options,
+            num_hands=2,
+            min_hand_detection_confidence=0.5,
+            min_hand_presence_confidence=0.5,
+            min_tracking_confidence=0.5
+        )
+        self.detector = vision.HandLandmarker.create_from_options(options)
+        print("Real Model initialized with MediaPipe Tasks API")
 
     def predict(self, image):
+        self.load_resources()
         if image is None:
             print("[DEBUG] Received empty image")
             return {"label": "ERROR", "confidence": 0.0}
 
-        # Preprocess: Hand detection using CVZone
         try:
-            hands, image = self.detector.findHands(image, draw=False)
-        except Exception as e:
-            print(f"[DEBUG] Error in findHands: {str(e)}")
-            return {"label": "CV ERROR", "confidence": 0.0}
+            # Convert OpenCV BGR image to RGB
+            rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_image)
+            
+            # Detect hands
+            detection_result = self.detector.detect(mp_image)
+            
+            if not detection_result.hand_landmarks:
+                print("[DEBUG] No hands found in image")
+                return {"label": "NO HAND DETECTED", "confidence": 0.0}
 
-        if not hands:
-            print("[DEBUG] No hands found in image")
-            return {"label": "NO HAND DETECTED", "confidence": 0.0}
+            # Landmark Extraction (use first hand)
+            lm = []
+            first_hand_landmarks = detection_result.hand_landmarks[0]
+            for p in first_hand_landmarks:
+                lm.extend([p.x, p.y, p.z])
 
-        # Landmark Extraction
-        # Teammate's model likely expects 21 landmarks (x, y, z) = 63 features
-        lm = []
-        try:
-            if self.detector.results.multi_hand_landmarks:
-                # We strictly use the first detected hand's landmarks to fit the 63-feature model shape
-                for p in self.detector.results.multi_hand_landmarks[0].landmark:
-                    lm.extend([p.x, p.y, p.z])
-                
-                if len(lm) != 63:
-                    print(f"[DEBUG] Unexpected landmark count: {len(lm)}")
-                    return {"label": "LANDMARK ERROR", "confidence": 0.0}
-            else:
-                print("[DEBUG] multi_hand_landmarks is None")
+            if len(lm) != 63:
+                print(f"[DEBUG] Unexpected landmark count: {len(lm)}")
                 return {"label": "LANDMARK ERROR", "confidence": 0.0}
-        except Exception as e:
-            print(f"[DEBUG] Error extracting landmarks: {str(e)}")
-            return {"label": "LANDMARK ERROR", "confidence": 0.0}
 
-        # Scale and Predict
-        try:
+            # Scale and Predict
             lm_scaled = self.scaler.transform([lm])
             preds = self.model.predict(lm_scaled, verbose=0)[0]
             
@@ -66,34 +86,31 @@ class SignDetector:
             label = self.class_names[top_idx]
             confidence = float(preds[top_idx])
 
-            # Calculate relative bounding box
+            # Calculate bounding box from normalized landmarks
             h, w, c = image.shape
             
             # Combine bounding boxes if multiple hands detected
-            if len(hands) == 1:
-                bx, by, bw, bh = hands[0]['bbox']
-            else:
-                # Calculate union of all hand bounding boxes
-                x_min = min(hand['bbox'][0] for hand in hands)
-                y_min = min(hand['bbox'][1] for hand in hands)
-                x_max = max(hand['bbox'][0] + hand['bbox'][2] for hand in hands)
-                y_max = max(hand['bbox'][1] + hand['bbox'][3] for hand in hands)
-                bx, by, bw, bh = x_min, y_min, x_max - x_min, y_max - y_min
-            
-            # Add padding to bbox (optional, CVZone usually makes it tight)
-            # Ensure within image bounds
+            all_x = []
+            all_y = []
+            for hand_lms in detection_result.hand_landmarks:
+                for p in hand_lms:
+                    all_x.append(p.x * w)
+                    all_y.append(p.y * h)
+                    
+            bx = int(min(all_x))
+            by = int(min(all_y))
+            x_max = int(max(all_x))
+            y_max = int(max(all_y))
+            bw = x_max - bx
+            bh = y_max - by
+
+            # Add padding
             bx = max(0, bx - 20)
             by = max(0, by - 20)
             bw = min(w - bx, bw + 40)
             bh = min(h - by, bh + 40)
 
-            # Convert to percentages for responsive frontend overlay
-            bbox_percent = [
-                bx / w,
-                by / h,
-                bw / w,
-                bh / h
-            ]
+            bbox_percent = [bx / w, by / h, bw / w, bh / h]
 
             print(f"[DEBUG] Prediction: {label} ({confidence:.4f})")
 
@@ -102,6 +119,7 @@ class SignDetector:
                 "confidence": round(confidence, 4),
                 "bbox": bbox_percent
             }
+
         except Exception as e:
             print(f"[DEBUG] Error during prediction: {str(e)}")
             return {"label": "PREDICTION ERROR", "confidence": 0.0}

@@ -1,7 +1,12 @@
+import os
 from pymongo import MongoClient
 
 # Initialize connection
-client = MongoClient('mongodb://localhost:27017/')
-db = client['sign_language_db']
+mongo_uri = os.environ.get('MONGO_URI')
+client = MongoClient(mongo_uri)
+try:
+    db = client.get_default_database()
+except Exception:
+    db = client['sign_language_db']
 
 # db.detection_history can be used directly for operations

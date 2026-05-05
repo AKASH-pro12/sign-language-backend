@@ -12,8 +12,9 @@ from routes.analytics import analytics_bp
 app = Flask(__name__)
 CORS(app)
 
-# Database Config (temporary local - will change later)
-client = MongoClient('mongodb://localhost:27017/')
+# Database Config (using environment variable)
+mongo_uri = os.environ.get('MONGO_URI')
+client = MongoClient(mongo_uri)
 app.config['MONGO_CLIENT'] = client
 
 # Register Blueprints
