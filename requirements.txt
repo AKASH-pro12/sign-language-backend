@@ -1,0 +1,10 @@
+flask
+flask-cors
+pymongo
+opencv-python
+numpy==1.24.3
+tensorflow==2.13.0
+mediapipe==0.10.9
+joblib
+scikit-learn
+protobuf==3.20.3
